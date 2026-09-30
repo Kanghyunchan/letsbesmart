@@ -634,7 +634,7 @@ function renderTT(){
   const room=sel.value, tt=S.roomClasses[room]||{};
   let h=`<thead><tr><th></th>${TT_DAYS.map(d=>`<th>${d}</th>`).join("")}</tr></thead><tbody>`;
   for(let hr=9;hr<18;hr++){
-    h+=`<tr><th class="num">${pad(hr)}</th>`;
+    h+=`<tr><th class="num">${pad(hr)}–${pad(hr+1)}</th>`;
     for(const d of TT_DAYS){
       if(hr===12){h+=`<td><button type="button" class="cell lunch" disabled aria-label="${d} 점심시간"></button></td>`;continue}
       const on=(tt[d]||[]).includes(hr);
