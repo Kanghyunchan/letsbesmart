@@ -215,14 +215,14 @@ footer{margin-top:28px;color:var(--muted);font-size:12px}
         </div>
         <div class="row">
           <label class="field" id="fDow"><span>요일</span>
-            <select id="sDow"><option>월</option><option>화</option><option>수</option><option>목</option><option>금</option><option>토</option></select>
+            <select id="sDow"><option>월</option><option>화</option><option>수</option><option>목</option><option>금</option></select>
           </label>
           <label class="field" id="fDate" hidden><span>날짜</span><input type="date" id="sDate"></label>
           <label class="field" id="fStart"><span>시작</span><select id="sStart"></select></label>
           <label class="field" id="fEnd"><span>종료</span><select id="sEnd"></select></label>
           <button class="btn primary" id="addSched" type="button">등록</button>
         </div>
-        <p class="hint" id="schedHint">점심시간(12~13시)은 걸칠 수 없어요. 오전과 오후를 나눠서 등록하세요.</p>
+        <p class="hint" id="schedHint">주말에는 등록할 수 없고, 점심시간(12~13시)은 걸칠 수 없어요. 오전과 오후를 나눠서 등록하세요.</p>
         <p class="msg" id="schedMsg" role="status"></p>
       </div>
       <div class="panel">
@@ -419,8 +419,9 @@ function assign(d){
   const key=fmt(d), dow=DOW[d.getDay()], vac=isVacation(d);
   const b=blocksFor(d), blocks=b.list.slice().sort((x,y)=>x.s-y.s);
   const hol=holidayOf(key);
-  const res={key,dow,vac,src:b.src,hol,blocks,segments:[],hours:0,warns:0};
-  if(hol||!blocks.length) return res;
+  const weekend=d.getDay()===0||d.getDay()===6;
+  const res={key,dow,vac,src:b.src,hol,weekend,blocks,segments:[],hours:0,warns:0};
+  if(hol||weekend||!blocks.length) return res;
   const apply=!vac||S.settings.ttInVacation;
   const seed=d.getFullYear()*10000+weekOfYear(d)*100+d.getDay()+(S.rerolls[key]||0)*100003;
   const rnd=mulberry32(seed);
@@ -473,7 +474,7 @@ function renderCal(){
     const cls=["day"]; if(wdN==0)cls.push("sun"); if(wdN==6)cls.push("sat"); if(a.hol)cls.push("hol");
     if(k===fmt(now))cls.push("today"); if(k===selKey)cls.push("sel");
     let badge="";
-    if(a.hol&&a.blocks.length){badge=`<span class="wk off">근로 없음</span>`;holOff++}
+    if(a.hol&&a.blocks.length&&!a.weekend){badge=`<span class="wk off">근로 없음</span>`;holOff++}
     else if(a.segments.length){badge=`<span class="wk ${a.warns?"warn":""}">${a.hours}h</span>`;wd++;hrs+=a.hours;warns+=a.warns}
     html+=`<button type="button" class="${cls.join(" ")}" data-key="${k}" aria-label="${viewM+1}월 ${d}일${a.hol?" "+esc(a.hol):""}${a.hours&&!a.hol?" 근로 "+a.hours+"시간":""}"><span class="d">${d}</span>${a.hol?`<span class="hn">${esc(a.hol)}</span>`:""}${badge}</button>`;
   }
@@ -494,6 +495,8 @@ function renderDetail(){
   const title=`${dt.getMonth()+1}월 ${dt.getDate()}일 (${a.dow})`;
   const chips=[`<span class="chip">${a.vac?"방학":"학기 중"}</span>`];
   if(a.hol) chips.push(`<span class="chip hol">${esc(a.hol)} · 근로 불가</span>`);
+  if(a.weekend) chips.push(`<span class="chip hol">주말 · 근로 불가</span>`);
+  else if(a.hol){}
   else if(a.blocks.length) chips.push(`<span class="chip acc">${esc(a.src)} · ${a.hours}시간</span>`);
   if(a.warns) chips.push(`<span class="chip warn">확인 필요 ${a.warns}건</span>`);
   if(!a.hol&&a.blocks.length&&(!a.vac||S.settings.ttInVacation)) chips.push(`<span class="chip">강의실 시간표 적용</span>`);
@@ -502,7 +505,7 @@ function renderDetail(){
   for(let h=9;h<18;h++){
     const t=`${pad(h)}:00–${pad(h+1)}:00`;
     if(h===12){rows+=`<tr class="lunch"><td class="t">${t}</td><td>–</td><td>점심시간</td></tr>`;continue}
-    if(a.hol){rows+=`<tr><td class="t">${t}</td><td></td><td style="color:var(--muted)">${a.blocks.some(b=>h>=b.s&&h<b.e)?"공휴일 (근로 불가)":"개인 시간"}</td></tr>`;continue}
+    if(a.hol||a.weekend){rows+=`<tr><td class="t">${t}</td><td></td><td style="color:var(--muted)">${a.blocks.some(b=>h>=b.s&&h<b.e)?(a.weekend?"주말 (근로 불가)":"공휴일 (근로 불가)"):"개인 시간"}</td></tr>`;continue}
     const seg=a.segments.find(s=>h>=s.s&&h<s.e);
     if(seg){
       const bad=!seg.room;
@@ -513,8 +516,9 @@ function renderDetail(){
   $("#detail").innerHTML=`<div class="detail-head"><h2>${title}</h2><span class="label num">${selKey}</span></div>
    <div class="chips">${chips.join("")}</div>
    <div class="tbl-wrap"><table><thead><tr><th>시간</th><th>강의실</th><th>근로내용</th></tr></thead><tbody>${rows}</tbody></table></div>
+   ${a.weekend?`<p class="hint" style="margin-top:10px">주말에는 근로를 등록하거나 배정할 수 없어요.</p>`:""}
    ${!a.hol&&a.segments.length?`<div class="detail-actions"><button class="btn small" id="reroll" type="button">다른 조합으로 다시 뽑기</button>${rr?`<button class="btn small ghost" id="unroll" type="button">처음 조합으로</button>`:""}</div>`:""}
-   ${!a.blocks.length&&!a.hol?`<p class="hint" style="margin-top:10px">이날 등록된 근로가 없어요. '근로 일정' 탭에서 ${a.vac?"방학 중 요일 일정이나 ":"학기 중 요일 일정이나 "}특정 날짜 일정을 추가하세요.</p>`:""}`;
+   ${!a.blocks.length&&!a.hol&&!a.weekend?`<p class="hint" style="margin-top:10px">이날 등록된 근로가 없어요. '근로 일정' 탭에서 ${a.vac?"방학 중 요일 일정이나 ":"학기 중 요일 일정이나 "}특정 날짜 일정을 추가하세요.</p>`:""}`;
 }
 $("#cal").addEventListener("click",e=>{const b=e.target.closest("button.day");if(!b)return;selKey=b.dataset.key;renderCal();if(window.innerWidth<860)$("#detail").scrollIntoView({behavior:"smooth",block:"start"})});
 $("#detail").addEventListener("click",e=>{
@@ -535,7 +539,7 @@ function syncSchedForm(){
   $("#fDow").hidden=!(t==="semester"||t==="vacation");
   $("#fDate").hidden=!(t==="date"||t==="week");
   $("#fStart").hidden=$("#fEnd").hidden=(t==="week");
-  $("#schedHint").textContent=t==="week"?"고른 날짜가 속한 주의 월~금에 09~12시, 13~18시를 한 번에 등록해요. 공휴일인 날은 자동으로 근로에서 빠집니다.":"점심시간(12~13시)은 걸칠 수 없어요. 오전과 오후를 나눠서 등록하세요.";
+  $("#schedHint").textContent=t==="week"?"고른 날짜가 속한 주의 월~금에 09~12시, 13~18시를 한 번에 등록해요. 공휴일인 날은 자동으로 근로에서 빠집니다.":"주말에는 등록할 수 없고, 점심시간(12~13시)은 걸칠 수 없어요. 오전과 오후를 나눠서 등록하세요.";
   setMsg("#schedMsg","");
 }
 document.querySelectorAll('input[name=stype]').forEach(r=>r.addEventListener("change",syncSchedForm));
@@ -558,7 +562,9 @@ $("#addSched").onclick=()=>{
   if(!(e>s)) return setMsg("#schedMsg","종료 시간은 시작 시간보다 늦어야 해요.");
   if(s<12&&e>12) return setMsg("#schedMsg","점심시간(12~13시)을 걸쳐서 등록할 수 없어요.");
   let err;
-  if(t==="date"){ if(!$("#sDate").value) return setMsg("#schedMsg","날짜를 골라 주세요."); err=addBlock(S.special,$("#sDate").value,s,e); }
+  if(t==="date"){ if(!$("#sDate").value) return setMsg("#schedMsg","날짜를 골라 주세요.");
+    const wd=parse($("#sDate").value).getDay(); if(wd===0||wd===6) return setMsg("#schedMsg","주말에는 근로를 등록할 수 없어요. 평일 날짜를 골라 주세요.");
+    err=addBlock(S.special,$("#sDate").value,s,e); }
   else err=addBlock(t==="semester"?S.semester:S.vacation,$("#sDow").value,s,e);
   if(err) return setMsg("#schedMsg",err);
   save();renderAll();
@@ -569,8 +575,8 @@ function renderSchedList(){
   const rows=[];
   const order=["월","화","수","목","금","토","일"];
   for(const [label,map,kind] of [["학기 중",S.semester,"semester"],["방학 중",S.vacation,"vacation"]])
-    order.forEach(w=>(map[w]||[]).forEach((b,i)=>rows.push({type:label,when:w+"요일",b,kind,key:w,i})));
-  Object.keys(S.special).sort().forEach(k=>S.special[k].forEach((b,i)=>{const h=holidayOf(k);rows.push({type:"특정 날짜",when:`${k} (${DOW[parse(k).getDay()]})${h?` · ${h}`:""}`,b,kind:"special",key:k,i})}));
+    order.forEach(w=>(map[w]||[]).forEach((b,i)=>rows.push({type:label,when:w+"요일"+(w==="토"||w==="일"?" · 주말이라 적용 안 됨":""),b,kind,key:w,i})));
+  Object.keys(S.special).sort().forEach(k=>S.special[k].forEach((b,i)=>{const h=holidayOf(k),wd=parse(k).getDay();rows.push({type:"특정 날짜",when:`${k} (${DOW[wd]})${wd===0||wd===6?" · 주말이라 적용 안 됨":h?` · ${h}`:""}`,b,kind:"special",key:k,i})}));
   if(!rows.length){$("#schedList").innerHTML=`<p class="empty-state">아직 등록된 근로가 없어요. 왼쪽에서 요일과 시간을 골라 등록하세요.</p>`;return}
   $("#schedList").innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>구분</th><th>언제</th><th>시간</th><th></th></tr></thead><tbody>${
     rows.map(r=>`<tr><td>${r.type}</td><td>${esc(r.when)}</td><td class="t">${pad(r.b.s)}–${pad(r.b.e)}시</td><td style="text-align:right"><button class="btn small ghost" type="button" data-del="${r.kind}|${esc(r.key)}|${r.i}">삭제</button></td></tr>`).join("")
@@ -619,7 +625,7 @@ $("#view-res").addEventListener("click",e=>{
 });
 
 /* ---------- 강의실 시간표 ---------- */
-const TT_DAYS=["월","화","수","목","금","토"];
+const TT_DAYS=["월","화","수","목","금"];
 function renderTT(){
   const sel=$("#ttRoom"), cur=sel.value;
   sel.innerHTML=S.rooms.map(r=>`<option>${esc(r.name)}</option>`).join("");
@@ -699,7 +705,7 @@ $("#exportBtn").onclick=()=>{const o=Object.assign({},S);delete o.sample;showOut
 $("#csvBtn").onclick=()=>{
   const days=new Date(viewY,viewM+1,0).getDate(); const lines=[["날짜","요일","시작","종료","시간","강의실","근로내용","비고"]]; let total=0;
   for(let d=1;d<=days;d++){const a=assign(new Date(viewY,viewM,d));
-    if(a.hol&&a.blocks.length){lines.push([a.key,a.dow,"","","0","","",a.hol+" (근로 불가)"]);continue}
+    if(a.hol&&a.blocks.length&&!a.weekend){lines.push([a.key,a.dow,"","","0","","",a.hol+" (근로 불가)"]);continue}
     a.segments.forEach(s=>{total+=s.e-s.s;lines.push([a.key,a.dow,`${pad(s.s)}:00`,`${pad(s.e)}:00`,String(s.e-s.s),s.room,s.content,s.warn])});}
   lines.push(["합계","","","",String(total),"","",""]);
   const csv=lines.map(r=>r.map(c=>/[",\n]/.test(c)?`"${c.replace(/"/g,'""')}"`:c).join(",")).join("\n");
