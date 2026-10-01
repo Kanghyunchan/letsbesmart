@@ -134,6 +134,9 @@ textarea{width:100%;min-height:140px;font-family:var(--font-mono);font-size:12px
 .list li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);min-width:0}
 .list li span.name{min-width:0;overflow-wrap:anywhere}
 .list .tools{display:flex;gap:4px;flex-shrink:0;align-items:center}
+.list li.crow{flex-wrap:wrap}
+.list li.crow .tools{flex-wrap:wrap;justify-content:flex-end}
+select.mini{padding:3px 6px;font-size:12px}
 .empty-state{color:var(--muted);font-size:13px;padding:10px 0}
 
 /* timetable grid */
@@ -250,8 +253,13 @@ footer{margin-top:28px;color:var(--muted);font-size:12px}
         <div class="row">
           <label class="field" style="flex:1"><span>근로내용</span><input type="text" id="contentText" placeholder="예: 실습실 PC 점검"></label>
           <label class="check"><input type="checkbox" id="contentPc"> PC 필수</label>
+        </div>
+        <div class="row">
+          <label class="field"><span>한 번에 최소</span><select id="contentMin"></select></label>
+          <label class="field"><span>한 번에 최대</span><select id="contentMax"></select></label>
           <button class="btn primary" id="addContent" type="button">추가</button>
         </div>
+        <p class="hint">근로 시간이 최대보다 길면 강의실은 그대로 두고 근로내용만 나눠서 이어 붙입니다. 최소보다 짧은 근로에는 배정하지 않아요.</p>
         <p class="msg" id="contentMsg" role="status"></p>
         <ul class="list" id="contentList"></ul>
       </div>
@@ -306,6 +314,8 @@ footer{margin-top:28px;color:var(--muted);font-size:12px}
         <p class="hint">방학으로 볼 달을 고르세요. 방학에는 '방학 중' 요일 일정이, 나머지 달에는 '학기 중' 일정이 적용됩니다.</p>
         <div class="months" id="vacMonths"></div>
         <label class="check"><input type="checkbox" id="ttInVac"> 방학에도 강의실 시간표 적용 (계절학기 등)</label>
+        <label class="field" style="max-width:20rem"><span>근로내용 하나를 연속으로 맡는 최대 시간 (전체 기본값)</span><select id="maxChunk"></select></label>
+        <p class="hint">근로내용별 최대 시간이 따로 정해져 있으면 둘 중 짧은 쪽을 따릅니다. 강의실은 근로 시간 내내 바뀌지 않아요.</p>
       </div>
       <div class="panel stack">
         <h2>출근부 내보내기</h2>
@@ -378,13 +388,14 @@ const HOLIDAYS={
 
 /* ---------- 상태 ---------- */
 function blank(){return{version:2,rooms:[],contents:[],semester:{},vacation:{},special:{},roomClasses:{},
-  customHolidays:{},disabledHolidays:[],rerolls:{},settings:{vacationMonths:[1,2,7,8],ttInVacation:false},sample:false}}
+  customHolidays:{},disabledHolidays:[],rerolls:{},settings:{vacationMonths:[1,2,7,8],ttInVacation:false,maxChunk:3},sample:false}}
 function sample(){
   const s=blank(); s.sample=true;
   s.rooms=[{name:"공학관 201호",hasPc:true},{name:"공학관 305호",hasPc:false},{name:"인문관 112호",hasPc:true},
     {name:"학생회관 세미나실",hasPc:false},{name:"도서관 멀티미디어실",hasPc:true}];
-  s.contents=[{text:"실습실 PC 점검",pcRequired:true},{text:"강의실 기자재 점검",pcRequired:false},
-    {text:"학과 행정 서류 정리",pcRequired:false},{text:"수업 자료 스캔·업로드",pcRequired:true},{text:"비품 재고 파악",pcRequired:false}];
+  s.contents=[{text:"실습실 PC 점검",pcRequired:true,maxH:2},{text:"교수 PC 네트워크 점검",pcRequired:true,maxH:1},
+    {text:"강의실 기자재 점검",pcRequired:false,minH:2},{text:"학과 행정 서류 정리",pcRequired:false},
+    {text:"수업 자료 스캔·업로드",pcRequired:true,maxH:2},{text:"비품 재고 파악",pcRequired:false,maxH:2}];
   s.semester={"월":[{s:13,e:15}],"수":[{s:9,e:11},{s:14,e:17}],"금":[{s:10,e:12}]};
   s.roomClasses={"공학관 201호":{"월":[13,14],"수":[9,10,14,15]},"인문관 112호":{"수":[14,15,16],"금":[10,11]},
     "도서관 멀티미디어실":{"월":[13],"금":[10]},"공학관 305호":{"수":[9,10]}};
@@ -427,33 +438,53 @@ function assign(d){
   const rnd=mulberry32(seed);
   const rooms=shuffle(S.rooms,rnd), contents=shuffle(S.contents,rnd);
   const usedR=new Set(), usedC=new Set(), usedCombo=new Set();
-  function pick(hours){
-    for(const level of [2,1,0]){
-      for(const r of rooms){
-        if(!hours.every(h=>roomFree(r.name,dow,h,apply))) continue;
-        if(level>=2&&usedR.has(r.name)) continue;
-        for(const c of contents){
-          if(c.pcRequired&&!r.hasPc) continue;
-          if(level>=1&&usedC.has(c.text)) continue;
-          const k=r.name+"\u0000"+c.text; if(usedCombo.has(k)) continue;
-          usedR.add(r.name);usedC.add(c.text);usedCombo.add(k);
-          return {room:r.name,content:c.text,dup:level<2};
+  const gMax=+S.settings.maxChunk||0;
+  // 한 근로 블록 = 강의실 하나 고정. 근로내용만 시간 상한/하한에 맞춰 이어 붙인다.
+  function plan(room,len,strictC,relaxLimits){
+    const out=[], inBlock=new Set();
+    function dfs(rem){
+      if(rem===0) return true;
+      for(const c of contents){
+        if(c.pcRequired&&!room.hasPc) continue;
+        if(inBlock.has(c.text)) continue;
+        if(strictC&&usedC.has(c.text)) continue;
+        if(usedCombo.has(room.name+"\u0000"+c.text)) continue;
+        const mx=relaxLimits?rem:Math.min(rem,+c.maxH||rem,gMax||rem);
+        const mn=relaxLimits?1:(+c.minH||1);
+        for(let L=mx;L>=mn;L--){
+          inBlock.add(c.text);out.push({c,L});
+          if(dfs(rem-L)) return true;
+          out.pop();inBlock.delete(c.text);
         }
       }
+      return false;
     }
-    return null;
+    return dfs(len)?out:null;
   }
   for(const bl of blocks){
-    res.hours+=bl.e-bl.s;
-    if(!S.rooms.length||!S.contents.length){res.segments.push({s:bl.s,e:bl.e,room:"",content:"근로",warn:"강의실 또는 근로내용이 등록되지 않았어요"});res.warns++;continue}
+    const len=bl.e-bl.s; res.hours+=len;
+    if(!S.rooms.length||!S.contents.length){res.segments.push({s:bl.s,e:bl.e,bs:bl.s,room:"",content:"근로",warn:"강의실 또는 근로내용이 등록되지 않았어요"});res.warns++;continue}
     const hrs=[];for(let h=bl.s;h<bl.e;h++)hrs.push(h);
-    const p=pick(hrs);
-    if(p){res.segments.push({s:bl.s,e:bl.e,...p,warn:p.dup?"같은 날 강의실이나 근로내용이 겹침":""});if(p.dup)res.warns++;continue}
-    for(const h of hrs){
-      const q=pick([h]);
-      if(q) res.segments.push({s:h,e:h+1,...q,warn:q.dup?"같은 날 강의실이나 근로내용이 겹침":"수업 때문에 시간대별로 강의실을 나눠 배정"});
-      else {res.segments.push({s:h,e:h+1,room:"",content:"",warn:"이 시간에 비어 있는 강의실이 없어요"});res.warns++}
+    const free=rooms.filter(r=>hrs.every(h=>roomFree(r.name,dow,h,apply)));
+    if(!free.length){res.segments.push({s:bl.s,e:bl.e,bs:bl.s,room:"",content:"",warn:"이 근로 시간 내내 비어 있는 강의실이 없어요. 강의실을 추가하거나 근로 시간을 나눠 등록하세요."});res.warns++;continue}
+    let got=null;
+    for(const [roomFresh,strictC,relax] of [[1,1,0],[1,0,0],[0,0,0],[1,0,1],[0,0,1]]){
+      for(const r of free){
+        if(roomFresh&&usedR.has(r.name)) continue;
+        const p=plan(r,len,strictC,relax);
+        if(p){got={r,p,roomDup:!roomFresh,relax};break}
+      }
+      if(got) break;
     }
+    if(!got){res.segments.push({s:bl.s,e:bl.e,bs:bl.s,room:"",content:"",warn:"조건에 맞는 근로내용 조합이 없어요. 근로내용을 더 등록하거나 시간 상한·하한을 조정하세요."});res.warns++;continue}
+    usedR.add(got.r.name);
+    let t=bl.s;
+    got.p.forEach(({c,L},i)=>{
+      usedC.add(c.text);usedCombo.add(got.r.name+"\u0000"+c.text);
+      const w=i>0?"":got.relax?"근로내용이 부족해 시간 상한·하한을 지키지 못했어요":got.roomDup?"같은 날 같은 강의실을 다시 사용":"";
+      res.segments.push({s:t,e:t+L,bs:bl.s,room:got.r.name,content:c.text,warn:w});t+=L;
+    });
+    if(got.relax||got.roomDup) res.warns++;
   }
   return res;
 }
@@ -470,7 +501,7 @@ function renderCal(){
   const use={}; S.rooms.forEach(r=>use[r.name]={n:0,h:0});
   for(let d=1;d<=days;d++){
     const dt=new Date(viewY,viewM,d), k=fmt(dt), a=assign(dt), wdN=dt.getDay();
-    if(!a.hol) a.segments.forEach(s=>{if(!s.room)return;(use[s.room]=use[s.room]||{n:0,h:0});use[s.room].n++;use[s.room].h+=s.e-s.s});
+    if(!a.hol) a.segments.forEach(s=>{if(!s.room)return;const u=use[s.room]=use[s.room]||{n:0,h:0};if(s.s===s.bs)u.n++;u.h+=s.e-s.s});
     const cls=["day"]; if(wdN==0)cls.push("sun"); if(wdN==6)cls.push("sat"); if(a.hol)cls.push("hol");
     if(k===fmt(now))cls.push("today"); if(k===selKey)cls.push("sel");
     let badge="";
@@ -595,10 +626,17 @@ function renderRes(){
   $("#roomList").innerHTML=S.rooms.length?S.rooms.map((r,i)=>`<li><span class="name">${esc(r.name)}</span><span class="tools">
     <label class="check"><input type="checkbox" data-rpc="${i}" ${r.hasPc?"checked":""}> PC 있음</label>
     <button class="btn small ghost" type="button" data-rdel="${i}">삭제</button></span></li>`).join(""):`<li class="empty-state">강의실을 추가하세요.</li>`;
-  $("#contentList").innerHTML=S.contents.length?S.contents.map((c,i)=>`<li><span class="name">${esc(c.text)}</span><span class="tools">
+  $("#contentList").innerHTML=S.contents.length?S.contents.map((c,i)=>`<li class="crow"><span class="name">${esc(c.text)}</span><span class="tools">
     <label class="check"><input type="checkbox" data-cpc="${i}" ${c.pcRequired?"checked":""}> PC 필수</label>
+    <select class="mini" data-cmin="${i}" aria-label="${esc(c.text)} 최소 시간">${hourOpts(c.minH,"최소")}</select>
+    <select class="mini" data-cmax="${i}" aria-label="${esc(c.text)} 최대 시간">${hourOpts(c.maxH,"최대")}</select>
     <button class="btn small ghost" type="button" data-cdel="${i}">삭제</button></span></li>`).join(""):`<li class="empty-state">근로내용을 추가하세요.</li>`;
 }
+function hourOpts(v,kind){
+  v=+v||0;
+  return `<option value="0" ${v?"":"selected"}>${kind} 제한 없음</option>`+[1,2,3,4].map(h=>`<option value="${h}" ${v===h?"selected":""}>${kind} ${h}시간</option>`).join("");
+}
+function limitErr(mn,mx){return mn&&mx&&mn>mx?"최소 시간이 최대 시간보다 길 수 없어요.":""}
 $("#addRoom").onclick=()=>{
   const n=$("#roomName").value.trim(); if(!n) return setMsg("#roomMsg","강의실 이름을 입력하세요.");
   if(S.rooms.some(r=>r.name===n)) return setMsg("#roomMsg","이미 등록된 강의실이에요.");
@@ -608,7 +646,10 @@ $("#addRoom").onclick=()=>{
 $("#addContent").onclick=()=>{
   const n=$("#contentText").value.trim(); if(!n) return setMsg("#contentMsg","근로내용을 입력하세요.");
   if(S.contents.some(c=>c.text===n)) return setMsg("#contentMsg","이미 등록된 근로내용이에요.");
-  S.contents.push({text:n,pcRequired:$("#contentPc").checked}); $("#contentText").value="";$("#contentPc").checked=false;
+  const mn=+$("#contentMin").value, mx=+$("#contentMax").value;
+  if(limitErr(mn,mx)) return setMsg("#contentMsg",limitErr(mn,mx));
+  const c={text:n,pcRequired:$("#contentPc").checked}; if(mn)c.minH=mn; if(mx)c.maxH=mx;
+  S.contents.push(c); $("#contentText").value="";$("#contentPc").checked=false;$("#contentMin").value="0";$("#contentMax").value="0";
   setMsg("#contentMsg",""); save();renderAll();
 };
 $("#roomName").addEventListener("keydown",e=>{if(e.key==="Enter")$("#addRoom").click()});
@@ -617,6 +658,12 @@ $("#view-res").addEventListener("change",e=>{
   const t=e.target;
   if(t.dataset.rpc!=null){S.rooms[+t.dataset.rpc].hasPc=t.checked;save();renderAll()}
   if(t.dataset.cpc!=null){S.contents[+t.dataset.cpc].pcRequired=t.checked;save();renderAll()}
+  if(t.dataset.cmin!=null||t.dataset.cmax!=null){
+    const c=S.contents[+(t.dataset.cmin??t.dataset.cmax)], key=t.dataset.cmin!=null?"minH":"maxH", v=+t.value;
+    const mn=key==="minH"?v:+c.minH||0, mx=key==="maxH"?v:+c.maxH||0;
+    if(limitErr(mn,mx)){setMsg("#contentMsg",`${c.text}: ${limitErr(mn,mx)}`);renderRes();return}
+    if(v)c[key]=v;else delete c[key]; setMsg("#contentMsg",""); save();renderAll();
+  }
 });
 $("#view-res").addEventListener("click",e=>{
   const t=e.target;
@@ -696,7 +743,10 @@ $("#addHol").onclick=()=>{
 function renderSettings(){
   $("#vacMonths").innerHTML=Array.from({length:12},(_,i)=>`<label><input type="checkbox" data-vm="${i+1}" ${S.settings.vacationMonths.includes(i+1)?"checked":""}>${i+1}월</label>`).join("");
   $("#ttInVac").checked=!!S.settings.ttInVacation;
+  const mc=+S.settings.maxChunk||0;
+  $("#maxChunk").innerHTML=`<option value="0" ${mc?"":"selected"}>제한 없음</option>`+[1,2,3,4].map(h=>`<option value="${h}" ${mc===h?"selected":""}>${h}시간</option>`).join("");
 }
+$("#maxChunk").onchange=e=>{S.settings.maxChunk=+e.target.value;save();renderAll()};
 $("#vacMonths").addEventListener("change",e=>{const m=+e.target.dataset.vm;S.settings.vacationMonths=S.settings.vacationMonths.filter(x=>x!==m);if(e.target.checked)S.settings.vacationMonths.push(m);S.settings.vacationMonths.sort((a,b)=>a-b);save();renderAll()});
 $("#ttInVac").onchange=e=>{S.settings.ttInVacation=e.target.checked;save();renderAll()};
 let outName="";
@@ -756,7 +806,7 @@ document.querySelector(".tabs").addEventListener("click",e=>{
 });
 
 function renderAll(){$("#sampleNotice").hidden=!S.sample;renderCal();renderSchedList();renderRes();renderTT();renderHol();renderSettings()}
-load(); fillStart(); syncSchedForm(); $("#sDate").value=fmt(now); $("#cHolDate").value=fmt(now);
+load(); fillStart(); syncSchedForm(); $("#contentMin").innerHTML=hourOpts(0,"최소"); $("#contentMax").innerHTML=hourOpts(0,"최대"); $("#sDate").value=fmt(now); $("#cHolDate").value=fmt(now);
 renderAll();
 try{const t=localStorage.getItem(KEY+".tab");if(t){const b=document.querySelector(`.tab[data-view="${t}"]`);if(b)b.click()}}catch(e){}
 })();
