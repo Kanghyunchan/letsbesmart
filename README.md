@@ -3,8 +3,7 @@
 국가근로 출근부에 들어갈 **강의실과 근로내용을 날짜별로 자동 배정**해 주는 웹앱입니다.
 설치 없이 브라우저에서 바로 쓸 수 있습니다.
 
-👉 **사용하기: https://아이디.github.io/letsbesmart/**
-(배포 후 실제 주소로 바꿔 주세요.)
+👉 **사용하기: https://kanghyunchan.github.io/letsbesmart/**
 
 ---
 
